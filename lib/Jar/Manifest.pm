@@ -10,7 +10,7 @@ use Carp qw(croak carp);
 #######################
 # VERSION
 #######################
-our $VERSION = '0.031';
+our $VERSION = '0.04';
 
 #######################
 # EXPORT
@@ -33,16 +33,28 @@ sub Load {
         main    => {},  # Main Attributes
         entries => [],  # Manifest entries
     };
+
     foreach my $para ( _split_to_paras(@_) ) {
         my $isa_entry = 0;
         my %h;
         $isa_entry = 1
             if ( lc( ( split( /\n+/, $para ) )[0] ) =~ m{^\s*name}xi );
+
         foreach my $line ( split( /\n+/, $para ) ) {
+
             next unless ( $line =~ m{.+:.+} );
             my ( $k, $v ) = map { _trim($_) } split( /\s*:\s+/, $line );
+            next unless ( defined $k and defined $v );
+            next if ( ( $k =~ m{^\s*$} ) or ( $v =~ m{^\s*$} ) );
+            if ( defined $h{$k} ) {
+
+                # Attribute names cannot be repeated within a section
+                croak "Found duplicate attribute: $k\n";
+            }
+
             $h{$k} = $v;
-        }
+        } ## end foreach my $line ( split( /\n+/...))
+
         if ($isa_entry) {
             push @{ $manifest->{entries} }, \%h;
         }
@@ -50,6 +62,7 @@ sub Load {
             $manifest->{main} = { %{ $manifest->{main} }, %h };
         }
     } ## end foreach my $para ( _split_to_paras...)
+
     return $manifest;
 } ## end sub Load
 
@@ -67,15 +80,20 @@ sub Dump {
 
     my $str = q();
 
+    # Manifest-Version is required!
+    if ( not defined $manifest->{main}->{'Manifest-Version'} ) {
+        croak "Manifest-Version is not provided!\n";
+    }
+
     # Process Main
-    foreach my $main_attr ( sort _sort_attr keys %{ $manifest->{main} } ) {
+    foreach my $main_attr ( _sort_attr( keys %{ $manifest->{main} } ) ) {
         $main_attr = _trim($main_attr);
         _validate_attr($main_attr);
         $str
             .= _wrap_line(
             "${main_attr}: " . _clean_val( $manifest->{main}->{$main_attr} ) )
             . "\n";
-    } ## end foreach my $main_attr ( sort...)
+    } ## end foreach my $main_attr ( _sort_attr...)
 
     # Process entries
     foreach my $entry ( @{ $manifest->{entries} } ) {
@@ -93,8 +111,10 @@ sub Dump {
 
         # Process others
         foreach my $entry_attr (
-            sort _sort_attr grep { !/$name_attr/ }
-            keys %{$entry}
+            _sort_attr(
+                grep { !/$name_attr/ }
+                    keys %{$entry}
+            )
             )
         {
             $entry_attr = _trim($entry_attr);
@@ -103,8 +123,11 @@ sub Dump {
                 .= _wrap_line(
                 "${entry_attr}: " . _clean_val( $entry->{$entry_attr} ) )
                 . "\n";
-        } ## end foreach my $entry_attr ( sort...)
+        } ## end foreach my $entry_attr ( _sort_attr...)
     } ## end foreach my $entry ( @{ $manifest...})
+
+    # Append 2 new lines at EOF
+    $str .= "\n\n";
 
     # Done
     return $str;
@@ -184,17 +207,28 @@ sub _clean_val {
 
 # Sort Attributes
 sub _sort_attr {
-    ( grep { /-/ } $a ) <=> ( grep { /-/ } $b )
-        || lc($a) cmp lc($b);
-}
+    my @attr = @_;
+    @attr = sort {
+        ( grep { /-/ } $a ) <=> ( grep { /-/ } $b )
+            || lc($a) cmp lc($b)
+    } @attr;
+
+    # Manifest-Version must be first, and in exactly that case
+    my @order;
+    push @order, grep { /Manifest\-Version/ } @attr;
+    push @order, grep { !/Manifest\-Version/ } @attr;
+    return @order;
+} ## end sub _sort_attr
 
 # Wrap Line
 sub _wrap_line {
 
     # Wrap settings
-    $Text::Wrap::columns = 72;
-    $Text::Wrap::break   = '';
-    $Text::Wrap::huge    = 'wrap';
+    $Text::Wrap::unexpand = 0;
+    $Text::Wrap::tabstop  = 4;
+    $Text::Wrap::columns  = 72;
+    $Text::Wrap::break    = '';
+    $Text::Wrap::huge     = 'wrap';
 
     # Wrap
     return Text::Wrap::wrap( "", " ", @_ );
@@ -263,9 +297,9 @@ Jar::Manifest - Read and Write Java Jar Manifests
 
 =head1 DESCRIPTION
 
-C<Jar::Manifest> provides a perl interface to read and write Manifest files
-found within Java archives - typically C<META-INF/MANIFEST.MF> within a C<.jar>
-file.
+C<Jar::Manifest> provides a perl interface to read and write Manifest
+files found within Java archives - typically C<META-INF/MANIFEST.MF>
+within a C<.jar> file.
 
 The Jar Manifest specification can be found here
 L<http://docs.oracle.com/javase/7/docs/technotes/guides/jar/jar.html#JAR_Manifest>
@@ -283,17 +317,18 @@ L<http://docs.oracle.com/javase/7/docs/technotes/guides/jar/jar.html#JAR_Manifes
     print Dumper $manifest;
 
 Read the manifest contents in C<$string>. Returns a I<hash-reference>
-containing two keys. The I<main> key is another hash-reference to the main
-attributes and corresponding values. The I<entries> key is an array-ref of
-hashes containing per-entry attributes and the corresponding values
+containing two keys. The I<main> key is another hash-reference to the
+main attributes and corresponding values. The I<entries> key is an
+array-ref of hashes containing per-entry attributes and the
+corresponding values
 
 =item Dump($manifest)
 
     print Dump($manifest);
 
-Turns the C<$manifest> data structure into a string that can be printed to a
-C<MANIFEST.MF> file. The C<$manifest> structure is expected to be in the same
-format as the C<Load()> output.
+Turns the C<$manifest> data structure into a string that can be printed
+to a C<MANIFEST.MF> file. The C<$manifest> structure is expected to be
+in the same format as the C<Load()> output.
 
 =back
 
@@ -305,8 +340,8 @@ L<Text::Wrap>
 
 =head1 BUGS AND LIMITATIONS
 
-Please report any bugs or feature requests to C<bug-jar-manifest@rt.cpan.org>,
-or through the web interface at
+Please report any bugs or feature requests to
+C<bug-jar-manifest@rt.cpan.org>, or through the web interface at
 L<http://rt.cpan.org/Public/Dist/Display.html?Name=Jar-Manifest>
 
 =head1 AUTHOR
@@ -317,7 +352,7 @@ Mithun Ayachit C<mithun@cpan.org>
 
 Copyright (c) 2012, Mithun Ayachit. All rights reserved.
 
-This module is free software; you can redistribute it and/or modify it under
-the same terms as Perl itself. See L<perlartistic>.
+This module is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself. See L<perlartistic>.
 
 =cut
